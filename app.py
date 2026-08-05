@@ -2,8 +2,6 @@ import streamlit as st
 import whisper
 import tempfile
 import os
-import librosa
-import numpy as np
 import random
 from PIL import Image
 
@@ -14,9 +12,10 @@ st.title("📐 数学A 証明発表フィードバック")
 st.write("動画をアップロードすると、イケボシさんとフゾクリーフさんからアドバイスが届くよ！")
 st.write("※２人のアドバイスを、提出するGoogle formにコピペしてください。")
 
+# 【軽量化】モデルを "base" から 最も軽い "tiny" に変更
 @st.cache_resource
 def load_whisper_model():
-    return whisper.load_model("base")
+    return whisper.load_model("tiny")
 
 model = load_whisper_model()
 
@@ -38,9 +37,7 @@ if image_file:
     except Exception:
         pass
 
-# --------------------------------------------------
-# セッション状態の初期化（リロードで消えない仕組み）
-# --------------------------------------------------
+# セッション状態の初期化
 if "boy_comment" not in st.session_state:
     st.session_state.boy_comment = None
 if "girl_comment" not in st.session_state:
@@ -49,7 +46,6 @@ if "girl_comment" not in st.session_state:
 uploaded_file = st.file_uploader("証明動画を選択してください", type=["mp4", "mov", "avi", "m4a", "mp3", "wav"])
 
 if uploaded_file is not None:
-    # 新しいファイルがアップロードされた場合のみ再解析を行う
     if st.button("解析を開始する") or st.session_state.boy_comment is None:
         suffix = os.path.splitext(uploaded_file.name)[1]
         
@@ -57,30 +53,24 @@ if uploaded_file is not None:
             tmp_file.write(uploaded_file.read())
             tmp_path = tmp_file.name
 
-        st.info("発表を解析中だよ...（※1〜2分かかります）")
+        st.info("発表を解析中だよ...（※30秒〜1分かかります）")
 
         try:
-            # 1. 音声解析 (librosa)
-            y, sr = librosa.load(tmp_path, sr=16000)
-            rms = librosa.feature.rms(y=y)
-            avg_volume = float(np.mean(rms))
-            
-            pitches, magnitudes = librosa.piptrack(y=y, sr=sr)
-            pitch_values = pitches[magnitudes > np.median(magnitudes)]
-            pitch_std = float(np.std(pitch_values)) if len(pitch_values) > 0 else 0.0
-
-            # 2. 文字起こし & 速度・接続詞解析
+            # 1. 文字起こし & 時間計測（Whisper単体で完結させて軽量化）
             result = model.transcribe(tmp_path, language="ja")
-            text = result["text"]
+            text = result.get("text", "")
             
-            duration = librosa.get_duration(y=y, sr=sr)
+            # 動画の長さを取得（Whisperのセグメント情報から算出）
+            segments = result.get("segments", [])
+            duration = segments[-1]["end"] if segments else 60.0
+            
             char_count = len(text)
             chars_per_min = (char_count / duration) * 60 if duration > 0 else 0
 
             logic_words = ["したがって", "ゆえに", "なぜなら", "よって", "仮定より", "定義より", "つまり"]
             found_logic_words = [w for w in logic_words if w in text]
 
-            # 3. 台詞作成
+            # 2. 台詞作成
             boy_openings = [
                 "最後までしっかりと自分の言葉で証明を説明しきることができたね！素晴らしい！",
                 "順序立てて数学の考えを伝えようとする姿勢がすごく伝わってきたよ！",
@@ -102,11 +92,7 @@ if uploaded_file is not None:
                 "自分の考えを言葉で伝える経験は確実に力になってるよ。この調子で頑張ろう！"
             ]
 
-            girl_voice_msg = ""
-            if avg_volume < 0.02:
-                girl_voice_msg = "声のトーンはとても丁寧だから、次回はマイクに少し近づいて話すと、よりハッキリと声が届くようになるよ。"
-            else:
-                girl_voice_msg = "マイクにしっかりと通る声で話せていて、すごく聞き取りやすい音量だったよ！"
+            girl_voice_msg = "自分の声をしっかりと吹き込んで発表できていて素晴らしかったよ！"
 
             girl_logic_msg = ""
             if len(found_logic_words) >= 2:
@@ -114,7 +100,7 @@ if uploaded_file is not None:
             else:
                 girl_logic_msg = "次は「したがって」や「なぜなら」っていう言葉を意識して挟むと、証明の流れがより伝わりやすくなるよ！"
 
-            # 4. セッションに結果を保存（リロード対策）
+            # 3. 結果の保存
             st.session_state.boy_comment = f"{random.choice(boy_openings)} {boy_speed_msg} {random.choice(boy_closings)}"
             st.session_state.girl_comment = f"{girl_voice_msg} {girl_logic_msg}"
 
@@ -125,9 +111,7 @@ if uploaded_file is not None:
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
 
-# --------------------------------------------------
-# 画面表示（セッションにデータがあればいつでも表示）
-# --------------------------------------------------
+# 画面表示
 if st.session_state.boy_comment is not None:
     st.subheader("🌟 ２人からのメッセージ")
 
@@ -137,7 +121,6 @@ if st.session_state.boy_comment is not None:
     st.chat_message("user", avatar=boy_icon).write(f"**【イケボシさん】**\n\n{st.session_state.boy_comment}")
     st.chat_message("assistant", avatar=girl_icon).write(f"**【フゾクリーフさん】**\n\n{st.session_state.girl_comment}")
 
-    # Google Formコピペ用エリア
     st.markdown("---")
     st.write("📋 **Google Form提出用テキスト（ここを右上のアイコンでコピーできます）**")
     full_text_for_copy = f"【イケボシさん】\n{st.session_state.boy_comment}\n\n【フゾクリーフさん】\n{st.session_state.girl_comment}"
