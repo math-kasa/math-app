@@ -72,12 +72,12 @@ if uploaded_file is not None:
             tmp_path = tmp_file.name
 
         st.info(
-            "発表を解析中だよ...（他の人が実行中の場合は順番待ちになります。そのまま1〜2分お待ちください）"
+            "発表を解析中だよ...（他の人が実行中の場合は順番待ちになります。1分以上進まない場合は混雑しています）"
         )
 
-        # 1人ずつ順番に処理を実行（メモリオーバー防止）
-        with st.session_state.processing_lock:
-            try:
+        try:
+            # 1人ずつ順番に処理を実行
+            with st.session_state.processing_lock:
                 # 1. 文字起こし & 時間計測
                 result = model.transcribe(tmp_path, language="ja")
                 text = result.get("text", "")
@@ -94,12 +94,13 @@ if uploaded_file is not None:
                     else f"{duration_sec}秒"
                 )
 
-                # --- 長すぎる動画（5分＝300秒以上）への注意メッセージ対応 ---
+                # 長すぎる動画への対応
                 if duration > 300:
                     st.warning(
-                        f"⚠️ 動画の時間が【{time_str}】と少し長いため、途中で解析をストップしました。\n\n"
-                        f"サーバーの混雑を防ぐため、**【3分以内】** の動画を推奨しています。\n"
-                        f"発表の要点をまとめて、短くした動画で再度試してみてね！"
+                        f"⚠️ 動画の時間が【{time_str}】と長いため、処理を中断しました。\n\n"
+                        f"**【生徒のみなさんへ】**\n"
+                        f"・授業中は自分の動画を見て振り返りを進めてね！\n"
+                        f"・このアプリは**家でやり直す**か、フォームに**「動画長いため家で実行」**と書いて提出すればOKです。"
                     )
                 else:
                     char_count = len(text)
@@ -254,16 +255,21 @@ if uploaded_file is not None:
                         f"（ ‾皿‾ ）： {chosen_quote}"
                     )
 
-            except Exception as e:
-                st.error(
-                    "解析中に一時的なエラーが発生しました。時間をおいてもう一度お試しいただくか、動画の長さを短くしてアップロードしてみてください。"
-                )
+        except Exception:
+            # 処理落ち・エラーが発生した時に画面に表示する安心案内
+            st.error(
+                "⚠️【ただいまサーバーが混雑しています】\n\n"
+                "みんなが一斉に使っているか、動画の処理に時間がかかっているため中断しました。\n\n"
+                "**【生徒のみなさんへ】**\n"
+                "・無理に何度も試さず、**自分の動画を見て振り返りを進めてください。**\n"
+                "・このアプリでの処理は**「家でやり直す」**か、Google Formに**「混雑エラーのため家で実行」**と書いて提出すればOKです！"
+            )
 
-            finally:
-                # 一時ファイル削除 ＆ メモリ強制解放
-                if os.path.exists(tmp_path):
-                    os.remove(tmp_path)
-                gc.collect()
+        finally:
+            # 一時ファイル削除 ＆ メモリ強制解放
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+            gc.collect()
 
 # 画面表示
 if st.session_state.boy_comment is not None:
