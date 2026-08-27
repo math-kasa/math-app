@@ -11,9 +11,14 @@ import whisper
 # 画面設定
 st.set_page_config(page_title="数学A 証明発表フィードバック", page_icon="📐")
 
-# 同時処理によるメモリクラッシュを防ぐ「順番待ち用の鍵」
-if "processing_lock" not in st.session_state:
-    st.session_state.processing_lock = threading.Lock()
+
+# 全セッション（全員）で完全共有される「真の順番待ち用の鍵」
+@st.cache_resource
+def get_global_lock():
+    return threading.Lock()
+
+
+global_lock = get_global_lock()
 
 st.title("📐 数学A 証明発表フィードバック")
 st.write(
@@ -72,12 +77,12 @@ if uploaded_file is not None:
             tmp_path = tmp_file.name
 
         st.info(
-            "発表を解析中だよ...（他の人が実行中の場合は順番待ちになります。1分以上進まない場合は混雑しています）"
+            "発表を解析中だよ...（他の人が実行中の場合は順番待ちになります。そのままお待ちください）"
         )
 
         try:
-            # 1人ずつ順番に処理を実行
-            with st.session_state.processing_lock:
+            # 全ユーザー共通の鍵を取得して1人ずつ順番に安全処理
+            with global_lock:
                 # 1. 文字起こし & 時間計測
                 result = model.transcribe(tmp_path, language="ja")
                 text = result.get("text", "")
@@ -298,5 +303,5 @@ if st.session_state.boy_comment is not None:
         "📋 **Google Form提出用テキスト（下の右上のアイコンでコピーできます）**"
     )
 
-    full_text_for_copy = f"【イケボシさん】\n{st.session_state.boy_comment}\n\n【フゾクリーフさん】\n{st.session_state.girl_comment}"
+    full_text_for_copy = f"【イケボシさん】\n{st.session_state.boy_comment}\n\n{st.session_state.girl_comment}"
     st.code(full_text_for_copy, language=None)
