@@ -11,7 +11,7 @@ import whisper
 st.set_page_config(page_title="数学A 証明発表フィードバック", page_icon="📐")
 
 
-# 全セッション共通の「真の順番待ち用の鍵」
+# 全セッション共通の「順番待ち用の鍵」
 @st.cache_resource
 def get_global_lock():
     return threading.Lock()
@@ -55,8 +55,10 @@ uploaded_file = st.file_uploader(
     type=["mp4", "mov", "avi", "m4a", "mp3", "wav"],
 )
 
+# ★修正：チャッピーの指摘を採用！
+# 動画を選んだだけでは絶対に動かさない。「解析を開始する」ボタンを押した時のみ実行！
 if uploaded_file is not None:
-    if st.button("解析を開始する") or st.session_state.boy_comment is None:
+    if st.button("解析を開始する"):
         suffix = os.path.splitext(uploaded_file.name)[1]
 
         with tempfile.NamedTemporaryFile(
@@ -69,15 +71,13 @@ if uploaded_file is not None:
             "発表を解析中だよ...（他の人が実行中の場合は順番待ちになります。1〜2分お待ちください）"
         )
 
-        # ボタンが押された時だけ、1人ずつ安全に鍵を取って処理
-        if global_lock.acquire(blocking=True, timeout=30):
+        # 他の生徒と被らないよう1人ずつロックを取得して実行
+        if global_lock.acquire(blocking=True, timeout=20):
             try:
-                # 処理直前にメモリをゴミ拾い
                 gc.collect()
 
-                # ★ここで初めてAIモデルを読み込む（起動時のクラッシュを防止）
+                # その瞬間だけWhisperを読み込む（メモリ節約）
                 model = whisper.load_model("tiny")
-
                 result = model.transcribe(tmp_path, language="ja")
                 text = result.get("text", "")
 
@@ -259,7 +259,7 @@ if uploaded_file is not None:
                     "・このアプリでの処理は**「家でやり直す」**か、Google Formに**「混雑エラーのため家で実行」**と書いて提出すればOKです！"
                 )
             finally:
-                # 終わったらモデルとメモリを完全に消去して鍵を戻す
+                # メモリ解放とロック解除
                 if "model" in locals():
                     del model
                 if os.path.exists(tmp_path):
@@ -267,10 +267,9 @@ if uploaded_file is not None:
                 gc.collect()
                 global_lock.release()
         else:
-            # 他の人が実行中の場合の案内
             st.error(
                 "⚠️【ただいま他の人が解析中です】\n\n"
-                "1人ずつ順番に処理しているため、1分ほど待ってからもう一度「解析を開始する」を押してください。\n"
+                "1人ずつ順番に処理しているため、30秒ほど待ってからもう一度「解析を開始する」を押してください。\n"
                 "※進まない場合は、**「混雑のため家で実行」**と書いて振り返りフォームを提出してね！"
             )
 
