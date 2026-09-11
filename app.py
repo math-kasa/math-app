@@ -1,7 +1,6 @@
 import gc
 import os
 import random
-import re
 import tempfile
 import threading
 from PIL import Image
@@ -12,7 +11,7 @@ import whisper
 st.set_page_config(page_title="数学A 証明発表フィードバック", page_icon="📐")
 
 
-# 全セッション（全員）で完全共有される「真の順番待ち用の鍵」
+# 全セッション共通の鍵
 @st.cache_resource
 def get_global_lock():
     return threading.Lock()
@@ -27,15 +26,13 @@ st.write(
 st.write("※２人のアドバイスを、提出するGoogle formにコピペしてください。")
 
 
-# 【軽量化】最も軽い "tiny" モデルをキャッシュ読み込み
+# モデルを読み込む関数（失敗した時にサーバーを落とさない対策）
 @st.cache_resource
 def load_whisper_model():
     return whisper.load_model("tiny")
 
 
-model = load_whisper_model()
-
-# 画像の読み込みと自動分割
+# 画像処理
 image_file = None
 for name in ["chara.jpg", "chara.png", "chara.jpeg"]:
     if os.path.exists(name):
@@ -43,7 +40,6 @@ for name in ["chara.jpg", "chara.png", "chara.jpeg"]:
         break
 
 boy_icon, girl_icon = "👦", "👧"
-
 if image_file:
     try:
         img = Image.open(image_file)
@@ -77,20 +73,22 @@ if uploaded_file is not None:
             tmp_path = tmp_file.name
 
         st.info(
-            "発表を解析中だよ...（他の人が実行中の場合は順番待ちになります。そのままお待ちください）"
+            "発表を解析中だよ...（他の人が実行中の場合は順番待ちになります。1〜2分お待ちください）"
         )
 
-        try:
-            # 全ユーザー共通の鍵を取得して1人ずつ順番に安全処理
-            with global_lock:
-                # 1. 文字起こし & 時間計測
+        # ロックを取得して1人ずつ処理
+        if global_lock.acquire(blocking=True, timeout=60):
+            try:
+                # 処理直前に強制ゴミ拾い
+                gc.collect()
+
+                model = load_whisper_model()
                 result = model.transcribe(tmp_path, language="ja")
                 text = result.get("text", "")
 
                 segments = result.get("segments", [])
                 duration = segments[-1]["end"] if segments else 60.0
 
-                # 分・秒の計算
                 duration_min = int(duration // 60)
                 duration_sec = int(duration % 60)
                 time_str = (
@@ -99,7 +97,6 @@ if uploaded_file is not None:
                     else f"{duration_sec}秒"
                 )
 
-                # 長すぎる動画への対応
                 if duration > 300:
                     st.warning(
                         f"⚠️ 動画の時間が【{time_str}】と長いため、処理を中断しました。\n\n"
@@ -113,7 +110,6 @@ if uploaded_file is not None:
                         (char_count / duration) * 60 if duration > 0 else 0
                     )
 
-                    # --- 解析データの抽出 ---
                     fillers = [
                         "えー",
                         "えっと",
@@ -157,7 +153,6 @@ if uploaded_file is not None:
                     ]
                     symbol_count = sum(text.count(s) for s in symbols)
 
-                    # --- コメント生成ロジック ---
                     boy_msg = f"今回は【{time_str}】の発表だったね！最後までしっかり発表しきってお疲れ様！ "
                     boy_aspects = []
 
@@ -223,7 +218,7 @@ if uploaded_file is not None:
                         "勇往邁進",
                         "一意専心",
                         "自我作古",
-                        "質実剛健",
+                        "質実構健",
                         "明鏡止水",
                     ]
                     teachers_shibui = [
@@ -260,21 +255,27 @@ if uploaded_file is not None:
                         f"（ ‾皿‾ ）： {chosen_quote}"
                     )
 
-        except Exception:
-            # 処理落ち・エラーが発生した時に画面に表示する安心案内
+            except Exception:
+                st.error(
+                    "⚠️【ただいまサーバーが混雑しています】\n\n"
+                    "動画の処理中にエラーが発生しました。\n\n"
+                    "**【生徒のみなさんへ】**\n"
+                    "・無理に何度も試さず、**自分の動画を見て振り返りを進めてください。**\n"
+                    "・このアプリでの処理は**「家でやり直す」**か、Google Formに**「混雑エラーのため家で実行」**と書いて提出すればOKです！"
+                )
+            finally:
+                # 終わったら鍵を返して、徹底的にゴミ掃除
+                global_lock.release()
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+                gc.collect()
+        else:
+            # 60秒待っても順番が来なかった場合の安全な諦め表示
             st.error(
-                "⚠️【ただいまサーバーが混雑しています】\n\n"
-                "みんなが一斉に使っているか、動画の処理に時間がかかっているため中断しました。\n\n"
-                "**【生徒のみなさんへ】**\n"
-                "・無理に何度も試さず、**自分の動画を見て振り返りを進めてください。**\n"
-                "・このアプリでの処理は**「家でやり直す」**か、Google Formに**「混雑エラーのため家で実行」**と書いて提出すればOKです！"
+                "⚠️【ただいま混雑中です】\n\n"
+                "他の生徒が解析中のためタイムアウトしました。\n"
+                "画面を再読み込みしてやり直すか、**「混雑のため家で実行」**と書いて振り返りフォームを提出してください！"
             )
-
-        finally:
-            # 一時ファイル削除 ＆ メモリ強制解放
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
-            gc.collect()
 
 # 画面表示
 if st.session_state.boy_comment is not None:
@@ -303,5 +304,5 @@ if st.session_state.boy_comment is not None:
         "📋 **Google Form提出用テキスト（下の右上のアイコンでコピーできます）**"
     )
 
-    full_text_for_copy = f"【イケボシさん】\n{st.session_state.boy_comment}\n\n{st.session_state.girl_comment}"
+    full_text_for_copy = f"【イケボシさん】\n{st.session_state.boy_comment}\n\n【フゾクリーフさん】\n{st.session_state.girl_comment}"
     st.code(full_text_for_copy, language=None)
