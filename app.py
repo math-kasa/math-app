@@ -11,7 +11,7 @@ import whisper
 st.set_page_config(page_title="数学A 証明発表フィードバック", page_icon="📐")
 
 
-# 全セッション共通の「順番待ち用の鍵」
+# 全セッション共通の「同時実行制御の鍵」
 @st.cache_resource
 def get_global_lock():
     return threading.Lock()
@@ -25,7 +25,7 @@ st.write(
 )
 st.write("※２人のアドバイスを、提出するGoogle formにコピペしてください。")
 
-# 画像処理（軽量）
+# キャラ画像読み込み
 image_file = None
 for name in ["chara.jpg", "chara.png", "chara.jpeg"]:
     if os.path.exists(name):
@@ -51,32 +51,33 @@ if "teacher_comment" not in st.session_state:
     st.session_state.teacher_comment = None
 
 uploaded_file = st.file_uploader(
-    "証明動画を選択してください（※3分以内の動画を推奨します）",
+    "証明動画を選択してください（※ファイルサイズが大きいとエラーになりやすいため、短めの動画を推奨します）",
     type=["mp4", "mov", "avi", "m4a", "mp3", "wav"],
 )
 
-# ★修正：チャッピーの指摘を採用！
-# 動画を選んだだけでは絶対に動かさない。「解析を開始する」ボタンを押した時のみ実行！
+# 【チャッピー＆Gemini合意策】
+# 1. アップロードしただけでは絶対動かさない
+# 2. ボタンを押した時だけ判定する
 if uploaded_file is not None:
     if st.button("解析を開始する"):
-        suffix = os.path.splitext(uploaded_file.name)[1]
 
-        with tempfile.NamedTemporaryFile(
-            delete=False, suffix=suffix
-        ) as tmp_file:
-            tmp_file.write(uploaded_file.read())
-            tmp_path = tmp_file.name
-
-        st.info(
-            "発表を解析中だよ...（他の人が実行中の場合は順番待ちになります。1〜2分お待ちください）"
-        )
-
-        # 他の生徒と被らないよう1人ずつロックを取得して実行
-        if global_lock.acquire(blocking=True, timeout=20):
+        # チャッピー提案：待機列（キュー）を作らず、誰かが使ってたら即座に断ってサーバーを守る！
+        if global_lock.acquire(blocking=False):
+            tmp_path = None
             try:
+                st.info("発表を解析中だよ...（1分ほどかかります）")
+
+                # 一時ファイル作成
+                suffix = os.path.splitext(uploaded_file.name)[1]
+                with tempfile.NamedTemporaryFile(
+                    delete=False, suffix=suffix
+                ) as tmp_file:
+                    tmp_file.write(uploaded_file.read())
+                    tmp_path = tmp_file.name
+
                 gc.collect()
 
-                # その瞬間だけWhisperを読み込む（メモリ節約）
+                # 解析する一瞬だけモデル読み込み（メモリ節約）
                 model = whisper.load_model("tiny")
                 result = model.transcribe(tmp_path, language="ja")
                 text = result.get("text", "")
@@ -96,8 +97,8 @@ if uploaded_file is not None:
                     st.warning(
                         f"⚠️ 動画の時間が【{time_str}】と長いため、処理を中断しました。\n\n"
                         f"**【生徒のみなさんへ】**\n"
-                        f"・授業中は自分の動画を見て振り返りを進めてね！\n"
-                        f"・このアプリは**家でやり直す**か、フォームに**「動画長いため家で実行」**と書いて提出すればOKです。"
+                        f"・動画が長すぎるとエラーになりやすいです。\n"
+                        f"・このアプリは**家でやり直す**か、フォームに**「動画長いため家で実行」**と書いて提出すればOKです！"
                     )
                 else:
                     char_count = len(text)
@@ -252,28 +253,30 @@ if uploaded_file is not None:
 
             except Exception:
                 st.error(
-                    "⚠️【ただいまサーバーが混雑しています】\n\n"
-                    "動画の処理中にエラーが発生しました。\n\n"
+                    "⚠️【処理中にエラーが発生しました】\n\n"
+                    "動画の解析中に一時的なエラーが起きました。\n\n"
                     "**【生徒のみなさんへ】**\n"
-                    "・無理に何度も試さず、**自分の動画を見て振り返りを進めてください。**\n"
-                    "・このアプリでの処理は**「家でやり直す」**か、Google Formに**「混雑エラーのため家で実行」**と書いて提出すればOKです！"
+                    "・何度も連続で押さず、**自分の動画を自分で見て振り返りを書いてね！**\n"
+                    "・このアプリでの処理は**「家でやり直す」**か、Google Formに**「エラーのため家で実行」**と書いて提出すれば大丈夫です！"
                 )
             finally:
-                # メモリ解放とロック解除
+                # 終わったら速攻でメモリとファイルを後片付け
                 if "model" in locals():
                     del model
-                if os.path.exists(tmp_path):
+                if tmp_path and os.path.exists(tmp_path):
                     os.remove(tmp_path)
                 gc.collect()
                 global_lock.release()
         else:
-            st.error(
-                "⚠️【ただいま他の人が解析中です】\n\n"
-                "1人ずつ順番に処理しているため、30秒ほど待ってからもう一度「解析を開始する」を押してください。\n"
-                "※進まない場合は、**「混雑のため家で実行」**と書いて振り返りフォームを提出してね！"
+            # 誰かが処理中のときは即座にこれを出す（サーバーを抱え込ませない）
+            st.warning(
+                "⏳ **【ただいま他の人が解析中です】**\n\n"
+                "サーバーの混雑を防ぐため、1人ずつ順番に処理しています。\n"
+                "**15秒〜30秒ほど待ってから、もう一度「解析を開始する」ボタンを押してください！**\n\n"
+                "※なかなか順番が進まない場合は、無理に待たずに**「混雑のため家で実行」**と書いてフォームを提出して大丈夫だよ！"
             )
 
-# 画面表示
+# 結果表示画面
 if st.session_state.boy_comment is not None:
     st.subheader("🌟 ２人からのメッセージ")
 
