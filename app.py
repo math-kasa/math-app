@@ -11,7 +11,7 @@ import whisper
 st.set_page_config(page_title="数学A 証明発表フィードバック", page_icon="📐")
 
 
-# 全セッション共通の鍵
+# 全セッション共通の「真の順番待ち用の鍵」
 @st.cache_resource
 def get_global_lock():
     return threading.Lock()
@@ -25,14 +25,7 @@ st.write(
 )
 st.write("※２人のアドバイスを、提出するGoogle formにコピペしてください。")
 
-
-# モデルを読み込む関数（失敗した時にサーバーを落とさない対策）
-@st.cache_resource
-def load_whisper_model():
-    return whisper.load_model("tiny")
-
-
-# 画像処理
+# 画像処理（軽量）
 image_file = None
 for name in ["chara.jpg", "chara.png", "chara.jpeg"]:
     if os.path.exists(name):
@@ -76,13 +69,15 @@ if uploaded_file is not None:
             "発表を解析中だよ...（他の人が実行中の場合は順番待ちになります。1〜2分お待ちください）"
         )
 
-        # ロックを取得して1人ずつ処理
-        if global_lock.acquire(blocking=True, timeout=60):
+        # ボタンが押された時だけ、1人ずつ安全に鍵を取って処理
+        if global_lock.acquire(blocking=True, timeout=30):
             try:
-                # 処理直前に強制ゴミ拾い
+                # 処理直前にメモリをゴミ拾い
                 gc.collect()
 
-                model = load_whisper_model()
+                # ★ここで初めてAIモデルを読み込む（起動時のクラッシュを防止）
+                model = whisper.load_model("tiny")
+
                 result = model.transcribe(tmp_path, language="ja")
                 text = result.get("text", "")
 
@@ -180,7 +175,7 @@ if uploaded_file is not None:
 
                     if filler_count >= 3:
                         girl_aspects.append(
-                            "『えー』『あのー』などの言葉が少し多めだったかな。考える時間が必要なときは、無理に言葉をつなげず一度黙って『間（ま）』を取る方が、聞き手には気持ちよく伝わるよ！"
+                            "『えー』『あのー』などの言葉が少し多めだったかな。考える時間が必要なときは、無理に言葉をつなげず一度黙って『間（ま）』を取る方が、気持ちよく伝わるよ！"
                         )
 
                     if logic_type_count >= 3:
@@ -218,7 +213,7 @@ if uploaded_file is not None:
                         "勇往邁進",
                         "一意専心",
                         "自我作古",
-                        "質実構健",
+                        "質実剛健",
                         "明鏡止水",
                     ]
                     teachers_shibui = [
@@ -264,17 +259,19 @@ if uploaded_file is not None:
                     "・このアプリでの処理は**「家でやり直す」**か、Google Formに**「混雑エラーのため家で実行」**と書いて提出すればOKです！"
                 )
             finally:
-                # 終わったら鍵を返して、徹底的にゴミ掃除
-                global_lock.release()
+                # 終わったらモデルとメモリを完全に消去して鍵を戻す
+                if "model" in locals():
+                    del model
                 if os.path.exists(tmp_path):
                     os.remove(tmp_path)
                 gc.collect()
+                global_lock.release()
         else:
-            # 60秒待っても順番が来なかった場合の安全な諦め表示
+            # 他の人が実行中の場合の案内
             st.error(
-                "⚠️【ただいま混雑中です】\n\n"
-                "他の生徒が解析中のためタイムアウトしました。\n"
-                "画面を再読み込みしてやり直すか、**「混雑のため家で実行」**と書いて振り返りフォームを提出してください！"
+                "⚠️【ただいま他の人が解析中です】\n\n"
+                "1人ずつ順番に処理しているため、1分ほど待ってからもう一度「解析を開始する」を押してください。\n"
+                "※進まない場合は、**「混雑のため家で実行」**と書いて振り返りフォームを提出してね！"
             )
 
 # 画面表示
